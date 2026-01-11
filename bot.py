@@ -2290,7 +2290,7 @@ async def main():
         except Exception as e:
             print(f"[WARNING] Webhook o'chirishda xatolik (ehtimol webhook yo'q): {e}")
         
-        # Use manual polling setup to avoid event loop conflicts with asyncio.run()
+        # Use manual polling setup
         print("[INFO] Polling boshlandi...")
         async with application:
             await application.start()
@@ -2300,7 +2300,7 @@ async def main():
             )
             print("[OK] Bot muvaffaqiyatli ishga tushdi va yangilanishlarni kutmoqda...")
             
-            # Keep running until interrupted using asyncio.Event
+            # Keep running until interrupted
             stop_event = asyncio.Event()
             try:
                 await stop_event.wait()  # Wait indefinitely until event is set
