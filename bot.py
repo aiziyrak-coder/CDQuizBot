@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import random
 import time
@@ -22,7 +23,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode, ChatAction
-from telegram.error import RetryAfter, TimedOut, TelegramError
+from telegram.error import RetryAfter, TimedOut, TelegramError, Conflict
 
 from database import db, User, Test, Question, Answer, TestResult, UserAnswer, Payment, TestAccess
 from file_parser import parse_docx, parse_pdf, validate_parsed_test
@@ -305,13 +306,33 @@ BOT_TOKEN = "8450348603:AAFluXVOO99MevP6MfdT9UkbsSXqf3WvPIg"
 ADMIN_GROUP_ID = -5143660617
 ADMIN_IDS = [5573250102, 6417011612]  # Admin ID'lari ro'yxati
 TEST_CREATION_COST = 0.0  # Test yaratish bepul
-TEST_TAKING_COST = 10000.0  # Test bajarish uchun to'lov
 PAYMENT_AMOUNTS = [10000, 20000, 50000]
 CARD_NUMBER = "5614 6887 1938 3324"
 # Bot username will be fetched dynamically from bot info
 
 # Conversation states
 WAITING_FOR_TEST_NAME, WAITING_FOR_TEST_FILE, WAITING_FOR_PAYMENT_SCREENSHOT, TAKING_TEST = range(4)
+
+
+def calculate_test_cost(question_count: int) -> float:
+    """
+    Calculate test cost based on number of questions.
+    - 100 tagacha: 10000 so'm
+    - Har 100 ta qo'shilganda: 5000 so'm qo'shiladi
+    Masalan: 178 ta = 15000 so'm, 200 ta = 20000 so'm, 299 ta = 20000 so'm
+    """
+    base_price = 10000.0
+    if question_count <= 100:
+        return base_price
+    # 100 dan ortiq bo'lsa, har 100 ta uchun 5000 so'm qo'shiladi
+    # 101-199: 1 ta qo'shimcha (15000), 200-299: 2 ta qo'shimcha (20000), va hokazo
+    if question_count < 200:
+        return base_price + 5000.0  # 101-199: 15000
+    if question_count < 300:
+        return base_price + 10000.0  # 200-299: 20000
+    # 300 dan boshlab har 100 ta uchun 5000 so'm qo'shiladi
+    additional_100s = math.ceil((question_count - 300) / 100.0)
+    return base_price + 10000.0 + (additional_100s * 5000.0)  # 20000 + qo'shimcha
 
 
 async def get_or_create_user(telegram_id: int, username: str = None, first_name: str = None) -> User:
@@ -373,11 +394,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     test_access = result.scalar_one_or_none()
                     
+                    # Get questions count to calculate cost
+                    result = await session.execute(
+                        select(func.count(Question.id)).where(Question.test_id == test_id)
+                    )
+                    question_count = result.scalar() or 0
+                    test_cost = calculate_test_cost(question_count)
+                    
                     if not test_access:
-                        if user.balance < TEST_TAKING_COST:
+                        if user.balance < test_cost:
                             text = (
                                 f"⚠️ <b>Balansingiz yetarli emas!</b>\n\n"
-                                f"Testni bajarish uchun {TEST_TAKING_COST:,.0f} so'm kerak.\n"
+                                f"Testni bajarish uchun {test_cost:,.0f} so'm kerak.\n"
                                 f"Sizning balansingiz: {user.balance:,.0f} so'm\n\n"
                                 f"Balansni to'ldiring va testni yechishni boshlang.\n"
                                 f"💡 <b>Eslatma:</b> Bir marta to'laganingizdan keyin, bu testni cheksiz yechishingiz mumkin."
@@ -391,7 +419,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             return
                         
                         # Deduct balance and create test access
-                        user.balance -= TEST_TAKING_COST
+                        user.balance -= test_cost
                         test_access = TestAccess(
                             user_id=user.telegram_id,
                             test_id=test_id
@@ -935,7 +963,7 @@ async def receive_test_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📤 <b>Testni bajarish uchun:</b>\n"
             f"• Yuqoridagi linkni bosing yoki nusxalab boshqa foydalanuvchilar bilan ulashing\n"
             f"• Yoki 'Testlar ro'yxati' bo'limidan testni tanlang\n\n"
-            f"💵 <b>Test bajarish narxi:</b> {TEST_TAKING_COST:,.0f} so'm\n"
+            f"💵 <b>Test bajarish narxi:</b> {calculate_test_cost(total_questions):,.0f} so'm\n"
             f"💰 Bir marta to'lagandan keyin, testni cheksiz yechish mumkin."
         )
         
@@ -1108,12 +1136,19 @@ async def handle_start_test(query, context, test_id: int):
         )
         test_access = result.scalar_one_or_none()
         
+        # Get questions count to calculate cost
+        result = await session.execute(
+            select(func.count(Question.id)).where(Question.test_id == test_id)
+        )
+        question_count = result.scalar() or 0
+        test_cost = calculate_test_cost(question_count)
+        
         # If not paid, check balance and require payment
         if not test_access:
-            if user.balance < TEST_TAKING_COST:
+            if user.balance < test_cost:
                 text = (
                     f"⚠️ <b>Balansingiz yetarli emas!</b>\n\n"
-                    f"Testni bajarish uchun {TEST_TAKING_COST:,.0f} so'm kerak.\n"
+                    f"Testni bajarish uchun {test_cost:,.0f} so'm kerak.\n"
                     f"Sizning balansingiz: {user.balance:,.0f} so'm\n\n"
                     f"Balansni to'ldiring va testni yechishni boshlang.\n"
                     f"💡 <b>Eslatma:</b> Bir marta to'laganingizdan keyin, bu testni cheksiz yechishingiz mumkin."
@@ -1132,7 +1167,7 @@ async def handle_start_test(query, context, test_id: int):
                 return
             
             # Deduct balance and create test access
-            user.balance -= TEST_TAKING_COST
+            user.balance -= test_cost
             test_access = TestAccess(
                 user_id=user.telegram_id,
                 test_id=test_id
