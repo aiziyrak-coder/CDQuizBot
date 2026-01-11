@@ -2226,8 +2226,8 @@ async def payment_verification_handler(update: Update, context: ContextTypes.DEF
         await handle_verify_payment(query, context, payment_id, False)
 
 
-async def main():
-    """Main function to run the bot"""
+async def setup_application():
+    """Setup application with handlers (async part)"""
     # Initialize database
     await db.init_db()
     
@@ -2272,72 +2272,26 @@ async def main():
     application.add_handler(CallbackQueryHandler(button_handler))  # General handler for other buttons
     application.add_handler(MessageHandler(filters.PHOTO | filters.TEXT, check_payment_message), group=1)
     
-    # Start bot
+    return application
+
+
+def main():
+    """Main function to run the bot (synchronous wrapper)"""
     print("[INFO] Bot ishga tushmoqda...")
     
-    # Delete webhook and pending updates to avoid conflicts
-    try:
-        # Delete webhook first to avoid conflicts (run_polling will handle the rest)
-        # Note: We need to initialize bot first to delete webhook
-        try:
-            # Create a temporary bot instance to delete webhook
-            from telegram import Bot as TelegramBot
-            temp_bot = TelegramBot(token=BOT_TOKEN)
-            async with temp_bot:
-                await temp_bot.delete_webhook(drop_pending_updates=True)
-                await asyncio.sleep(2)  # Wait a bit after deleting webhook
-                print("[INFO] Webhook o'chirildi va pending updates tozalandi.")
-        except Exception as e:
-            print(f"[WARNING] Webhook o'chirishda xatolik (ehtimol webhook yo'q): {e}")
-        
-        # Use manual polling setup
-        print("[INFO] Polling boshlandi...")
-        async with application:
-            await application.start()
-            await application.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True  # Drop pending updates to avoid conflicts
-            )
-            print("[OK] Bot muvaffaqiyatli ishga tushdi va yangilanishlarni kutmoqda...")
-            
-            # Keep running until interrupted
-            stop_event = asyncio.Event()
-            try:
-                await stop_event.wait()  # Wait indefinitely until event is set
-            except KeyboardInterrupt:
-                print("\n[OK] Bot to'xtatilmoqda...")
-                stop_event.set()
-            finally:
-                await application.updater.stop()
-                await application.stop()
-                await application.shutdown()
-                
-    except KeyboardInterrupt:
-        print("\n[OK] Bot to'xtatilmoqda...")
-    except Exception as e:
-        error_msg = str(e)
-        if "Conflict" in error_msg or "terminated by other getUpdates" in error_msg:
-            print("[ERROR] =========================================")
-            print("[ERROR] Bot conflict muammosi!")
-            print("[ERROR] Boshqa bot instance ishlamoqda.")
-            print("[ERROR] =========================================")
-            print("[INFO] Quyidagi buyruqni PowerShell'da ishlating:")
-            print("[INFO] Get-Process python | Stop-Process -Force")
-            print("[INFO] Keyin botni qayta ishga tushiring.")
-            print("[ERROR] =========================================")
-            # Try to stop gracefully
-            try:
-                await application.stop()
-                await application.shutdown()
-            except:
-                pass
-        else:
-            print(f"[ERROR] Botni ishga tushirishda xatolik: {e}")
-            import traceback
-            traceback.print_exc()
-        # Don't raise to allow graceful exit
-        return
+    # Setup application (async)
+    application = asyncio.run(setup_application())
+    
+    print("[INFO] Polling boshlandi...")
+    
+    # Use run_polling which handles webhook deletion and conflicts automatically
+    # This is the recommended approach and handles conflicts more robustly
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,  # Drop pending updates to avoid conflicts
+        stop_signals=None  # Don't stop on signals (systemd handles this)
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
